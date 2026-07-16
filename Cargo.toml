@@ -1,6 +1,6 @@
 [package]
 name = "cible"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 description = "cible — name reserved, nothing to see here yet"
 license = "MIT"
