@@ -1,8 +1,12 @@
-[package]
-name = "cible"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2024"
-description = "cible — name reserved, nothing to see here yet"
 license = "MIT"
 repository = "https://github.com/jdx/cible"
-readme = "README.md"
+
+[workspace.dependencies]
+cible-core = { version = "0.0.1", path = "crates/cible-core" }

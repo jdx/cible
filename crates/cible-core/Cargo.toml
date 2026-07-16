@@ -1,0 +1,8 @@
+[package]
+name = "cible-core"
+description = "cible — name reserved, nothing to see here yet"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true

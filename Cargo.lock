@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "cible"
 version = "0.0.1"
+dependencies = [
+ "cible-core",
+]
+
+[[package]]
+name = "cible-core"
+version = "0.0.1"
