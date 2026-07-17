@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS prs (
   title      TEXT,
   merged_at  TEXT,
   head_sha   TEXT,
+  deep       INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo, number)
 );
 CREATE TABLE IF NOT EXISTS pr_files (
@@ -108,12 +109,12 @@ impl Warehouse {
     }
 
     pub fn pr_is_deep(&self, repo: &str, number: i64) -> Result<bool> {
-        let deep: i64 = self.conn.query_row(
-            "SELECT COALESCE(deep, 0) FROM prs WHERE repo = ?1 AND number = ?2",
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM prs WHERE repo = ?1 AND number = ?2 AND deep > 0",
             params![repo, number],
             |r| r.get(0),
-        ).unwrap_or(0);
-        Ok(deep > 0)
+        )?;
+        Ok(n > 0)
     }
 
     pub fn mark_pr_deep(&self, repo: &str, number: i64) -> Result<()> {
@@ -141,9 +142,15 @@ impl Warehouse {
         merged_at: &str,
         head_sha: &str,
     ) -> Result<()> {
+        // ON CONFLICT UPDATE rather than INSERT OR REPLACE: REPLACE would
+        // reset the deep marker to its default on every re-upsert.
         self.conn.execute(
-            "INSERT OR REPLACE INTO prs (repo, number, title, merged_at, head_sha)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO prs (repo, number, title, merged_at, head_sha)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (repo, number) DO UPDATE SET
+               title = excluded.title,
+               merged_at = excluded.merged_at,
+               head_sha = excluded.head_sha",
             params![repo, number, title, merged_at, head_sha],
         )?;
         Ok(())
@@ -322,7 +329,7 @@ impl Warehouse {
     /// flakes (failures that passed on a rerun of the same commit).
     pub fn real_failures(&self, repo: &str) -> Result<Vec<RealFailure>> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.pr_number, r.head_sha, r.workflow_name, j.name
+            "SELECT DISTINCT r.pr_number, r.head_sha, r.workflow_name, j.name
              FROM jobs j
              JOIN runs r ON r.repo = j.repo AND r.id = j.run_id
              WHERE j.repo = ?1

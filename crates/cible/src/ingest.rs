@@ -76,6 +76,8 @@ pub fn run(repo: &str, prs: usize, db: &Path, force: bool, deep: bool) -> Result
 }
 
 fn pr_commit_shas(repo: &str, pr_number: i64) -> Result<Vec<String>> {
+    // gh_api_lines passes --paginate, so this follows Link headers past 100;
+    // GitHub's pulls/commits API itself caps at 250 commits per PR.
     let commits = github::gh_api_lines(
         &format!("repos/{repo}/pulls/{pr_number}/commits?per_page=100"),
         ".[].sha",

@@ -15,7 +15,7 @@ pub fn run(repo: &str, db: &Path) -> Result<()> {
         println!(
             "PR #{:<6} {}  {} / {}",
             f.pr_number,
-            &f.head_sha[..12.min(f.head_sha.len())],
+            f.head_sha.get(..12).unwrap_or(&f.head_sha),
             f.workflow_name,
             f.job_name
         );
