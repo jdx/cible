@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::github;
 
-pub fn run(repo: &str, prs: usize, db: &Path, force: bool) -> Result<()> {
+pub fn run(repo: &str, prs: usize, db: &Path, force: bool, deep: bool) -> Result<()> {
     let wh = Warehouse::open(db)?;
 
     eprintln!("fetching last {prs} merged PRs for {repo}…");
@@ -30,7 +30,8 @@ pub fn run(repo: &str, prs: usize, db: &Path, force: bool) -> Result<()> {
 
     for (i, pr) in pr_list.iter().enumerate() {
         let number = pr["number"].as_i64().unwrap_or(0);
-        if !force && wh.has_pr(repo, number)? {
+        let already = wh.has_pr(repo, number)?;
+        if !force && already && (!deep || wh.pr_is_deep(repo, number)?) {
             skipped += 1;
             continue;
         }
@@ -51,7 +52,18 @@ pub fn run(repo: &str, prs: usize, db: &Path, force: bool) -> Result<()> {
                 f["deletions"].as_i64().unwrap_or(0),
             )?;
         }
-        let n_runs = ingest_runs_for_sha(&wh, repo, number, head_sha)?;
+        let mut n_runs = ingest_runs_for_sha(&wh, repo, number, head_sha)?;
+        if deep {
+            // Merged PRs are green on their final commit almost by definition;
+            // the failures that matter as replay ground truth happened on
+            // earlier pushes.
+            for sha in pr_commit_shas(repo, number)? {
+                if sha != head_sha {
+                    n_runs += ingest_runs_for_sha(&wh, repo, number, &sha)?;
+                }
+            }
+            wh.mark_pr_deep(repo, number)?;
+        }
         ingested += 1;
         eprintln!("[{}/{total}] PR #{number}: {n_runs} runs", i + 1);
     }
@@ -61,6 +73,17 @@ pub fn run(repo: &str, prs: usize, db: &Path, force: bool) -> Result<()> {
         "done: ingested {ingested}, skipped {skipped} (already present); warehouse now has {n_prs} PRs, {n_runs} runs, {n_jobs} jobs"
     );
     Ok(())
+}
+
+fn pr_commit_shas(repo: &str, pr_number: i64) -> Result<Vec<String>> {
+    let commits = github::gh_api_lines(
+        &format!("repos/{repo}/pulls/{pr_number}/commits?per_page=100"),
+        ".[].sha",
+    )?;
+    Ok(commits
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect())
 }
 
 fn ingest_runs_for_sha(wh: &Warehouse, repo: &str, pr_number: i64, sha: &str) -> Result<usize> {
