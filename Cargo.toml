@@ -10,3 +10,6 @@ repository = "https://github.com/jdx/cible"
 
 [workspace.dependencies]
 cible-core = { version = "0.0.1", path = "crates/cible-core" }
+
+[profile.dev]
+debug = 1
