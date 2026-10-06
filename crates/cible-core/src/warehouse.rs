@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS prs (
   title      TEXT,
   merged_at  TEXT,
   head_sha   TEXT,
+  deep       INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo, number)
 );
 CREATE TABLE IF NOT EXISTS pr_files (
@@ -55,6 +56,27 @@ pub struct Warehouse {
     conn: Connection,
 }
 
+/// Additive column migrations for databases created by older versions.
+fn migrate(conn: &Connection) -> Result<()> {
+    let has_deep: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('prs') WHERE name = 'deep'")?
+        .exists([])?;
+    if !has_deep {
+        conn.execute("ALTER TABLE prs ADD COLUMN deep INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    Ok(())
+}
+
+/// A genuine (flake-filtered) CI failure on a PR: the job failed and no later
+/// rerun attempt of the same job in the same run succeeded.
+#[derive(Debug)]
+pub struct RealFailure {
+    pub pr_number: i64,
+    pub head_sha: String,
+    pub workflow_name: String,
+    pub job_name: String,
+}
+
 #[derive(Debug)]
 pub struct FlakyJob {
     pub name: String,
@@ -82,7 +104,25 @@ impl Warehouse {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Self { conn })
+    }
+
+    pub fn pr_is_deep(&self, repo: &str, number: i64) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM prs WHERE repo = ?1 AND number = ?2 AND deep > 0",
+            params![repo, number],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn mark_pr_deep(&self, repo: &str, number: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE prs SET deep = 1 WHERE repo = ?1 AND number = ?2",
+            params![repo, number],
+        )?;
+        Ok(())
     }
 
     pub fn has_pr(&self, repo: &str, number: i64) -> Result<bool> {
@@ -102,9 +142,15 @@ impl Warehouse {
         merged_at: &str,
         head_sha: &str,
     ) -> Result<()> {
+        // ON CONFLICT UPDATE rather than INSERT OR REPLACE: REPLACE would
+        // reset the deep marker to its default on every re-upsert.
         self.conn.execute(
-            "INSERT OR REPLACE INTO prs (repo, number, title, merged_at, head_sha)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO prs (repo, number, title, merged_at, head_sha)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (repo, number) DO UPDATE SET
+               title = excluded.title,
+               merged_at = excluded.merged_at,
+               head_sha = excluded.head_sha",
             params![repo, number, title, merged_at, head_sha],
         )?;
         Ok(())
@@ -277,6 +323,34 @@ impl Warehouse {
         let avg = walls.iter().sum::<f64>() / walls.len() as f64;
         let p90 = walls[((walls.len() as f64 * 0.9) as usize).min(walls.len() - 1)];
         Ok(PrCiStat { prs: walls.len() as i64, avg_wall_minutes: avg, p90_wall_minutes: p90 })
+    }
+
+    /// Ground truth for replay: genuine failures on PR commits, excluding
+    /// flakes (failures that passed on a rerun of the same commit).
+    pub fn real_failures(&self, repo: &str) -> Result<Vec<RealFailure>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT r.pr_number, r.head_sha, r.workflow_name, j.name
+             FROM jobs j
+             JOIN runs r ON r.repo = j.repo AND r.id = j.run_id
+             WHERE j.repo = ?1
+               AND j.conclusion = 'failure'
+               AND r.pr_number IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM jobs j2
+                 WHERE j2.repo = j.repo AND j2.run_id = j.run_id AND j2.name = j.name
+                   AND j2.run_attempt > j.run_attempt AND j2.conclusion = 'success'
+               )
+             ORDER BY r.pr_number DESC, j.name",
+        )?;
+        let rows = stmt.query_map(params![repo], |r| {
+            Ok(RealFailure {
+                pr_number: r.get(0)?,
+                head_sha: r.get(1)?,
+                workflow_name: r.get(2)?,
+                job_name: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Jobs that have never failed on their first attempt — candidates for

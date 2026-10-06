@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod failures;
 mod github;
 mod ingest;
 mod report;
@@ -30,6 +31,20 @@ enum Command {
         /// Re-ingest PRs already present in the warehouse
         #[arg(long)]
         force: bool,
+        /// Also ingest runs for every commit of each PR, not just the head.
+        /// Required for replay ground truth: merged PRs are green on their
+        /// final commit; real failures happened on earlier pushes.
+        #[arg(long)]
+        deep: bool,
+    },
+    /// List genuine (flake-filtered) CI failures on PR commits
+    Failures {
+        /// Repository in owner/name form
+        #[arg(long, short)]
+        repo: String,
+        /// Path to the warehouse database
+        #[arg(long, default_value = "cible.db")]
+        db: PathBuf,
     },
     /// Report CI statistics from the warehouse
     Report {
@@ -45,7 +60,8 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Ingest { repo, prs, db, force } => ingest::run(&repo, prs, &db, force),
+        Command::Ingest { repo, prs, db, force, deep } => ingest::run(&repo, prs, &db, force, deep),
+        Command::Failures { repo, db } => failures::run(&repo, &db),
         Command::Report { repo, db } => report::run(&repo, &db),
     }
 }
